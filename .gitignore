@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Secrets: set these as environment variables on Render instead
+.env
+
+# Old JSON data store (now in Neon)
+data/
+
+npm-debug.log*

@@ -1,0 +1,25 @@
+{
+  "name": "xprezz-logistics-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API for the Xprezz Logistics site: shipments, tracking history, quotes and contact messages (Postgres).",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env index.js",
+    "dev": "node --watch --env-file-if-exists=.env index.js",
+    "test": "node --test",
+    "import-json": "node --env-file-if-exists=.env import-json.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
+  }
+}
