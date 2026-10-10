@@ -5,6 +5,13 @@ const { fromPGlite, migrate } = require("./db");
 
 let db;
 let server;
+// Records what the API asks to email instead of sending anything.
+const notified = [];
+const notifier = {
+  shipmentUpdated: async (shipment, events) => {
+    notified.push({ tn: shipment.trackingNumber, titles: events.map((e) => e.title) });
+  },
+};
 let base;
 let token;
 
@@ -29,6 +36,7 @@ before(async () => {
 
   const app = createApp({
     db,
+    notifier,
     adminUsername: "admin",
     adminPassword: "secret-pass",
     tokenSecret: "test-secret",
@@ -160,4 +168,22 @@ test("quotes convert into shipments once", async () => {
   assert.equal(made.body.shipment.from, "Lagos");
   assert.equal(made.body.shipment.weight, "4 kg");
   assert.equal((await api("POST", "/api/shipments", { quoteId: q.body.id })).status, 409);
+});
+
+test("customer-facing changes trigger a notification; route edits and no-ops don't", async () => {
+  notified.length = 0;
+  await api("POST", "/api/shipments/direct", { trackingNumber: "AWB500", customer: { email: "c@example.com" } });
+  await api("PATCH", "/api/shipments/AWB500", { status: "IN TRANSIT" });
+  await api("PATCH", "/api/shipments/AWB500", { eta: "2026-12-24" }); // details only
+  await api("PATCH", "/api/shipments/AWB500/status", { status: "IN TRANSIT" }); // unchanged
+  const stop = (await api("POST", "/api/shipments/AWB500/stops", { location: "Hub" })).body.shipment.stops[0];
+  await api("PATCH", `/api/shipments/AWB500/stops/${stop.id}`, { status: "arrived" });
+  await api("POST", "/api/shipments/AWB500/events", { title: "Cleared customs" });
+
+  assert.deepEqual(notified, [
+    { tn: "AWB500", titles: ["Accepted"] },
+    { tn: "AWB500", titles: ["In Transit"] },
+    { tn: "AWB500", titles: ["Arrived at Hub"] },
+    { tn: "AWB500", titles: ["Cleared customs"] },
+  ]);
 });

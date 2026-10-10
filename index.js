@@ -1,5 +1,6 @@
 const { createApp } = require("./app");
 const { connect, migrate } = require("./db");
+const { createNotifier } = require("./notifier");
 
 const {
   PORT = 5000,
@@ -8,6 +9,9 @@ const {
   TOKEN_SECRET,
   CORS_ORIGIN,
   DATABASE_URL,
+  RESEND_API_KEY,
+  EMAIL_FROM,
+  SITE_URL,
 } = process.env;
 
 const missing = ["ADMIN_PASSWORD", "TOKEN_SECRET", "DATABASE_URL"].filter((k) => !process.env[k]);
@@ -28,6 +32,7 @@ async function main() {
     adminPassword: ADMIN_PASSWORD,
     tokenSecret: TOKEN_SECRET,
     corsOrigin: CORS_ORIGIN,
+    notifier: createNotifier({ apiKey: RESEND_API_KEY, from: EMAIL_FROM, siteUrl: SITE_URL }),
   });
 
   app.listen(PORT, () => {

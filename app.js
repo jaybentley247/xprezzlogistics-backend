@@ -33,8 +33,16 @@ function shipmentFields(body) {
 
 const normalizeTn = (id) => String(id).trim().toUpperCase();
 
-function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }) {
+const NO_NOTIFIER = { shipmentUpdated: async () => {} };
+
+function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin, notifier = NO_NOTIFIER }) {
   const app = express();
+
+  // Emails the customer after a change is saved. Not awaited: email
+  // delivery never slows down or fails the admin's request.
+  const notifyCustomer = (shipment, events) => {
+    if (shipment && events.length) notifier.shipmentUpdated(shipment, events).catch(() => {});
+  };
 
   app.use(cors(corsOrigin ? { origin: corsOrigin.split(",").map((o) => o.trim()) } : {}));
   app.use(express.json({ limit: "15mb" })); // shipment photos arrive as data URLs
@@ -65,15 +73,18 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
     const event = statusEvent(status, "Shipment created");
     await repo.insertShipment(q, trackingNumber, { ...shipmentFields(body), status }, event.time);
     await repo.insertEvent(q, trackingNumber, event);
+    return event;
   }
 
-  // Changes status and appends it to the history. No-op if unchanged.
+  // Changes status and appends it to the history. Returns the new history
+  // entry, or null if the status didn't change.
   async function changeStatus(q, trackingNumber, currentStatus, nextStatus, description) {
     const next = clean(nextStatus).toUpperCase();
-    if (!next || next === currentStatus) return;
+    if (!next || next === currentStatus) return null;
     const event = statusEvent(next, clean(description));
     await repo.updateShipment(q, trackingNumber, { status: next }, event.time);
     await repo.insertEvent(q, trackingNumber, event);
+    return event;
   }
 
   // ---------- Health ----------
@@ -111,13 +122,15 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
   app.post("/api/shipments/direct", admin, async (req, res) => {
     const body = req.body || {};
     const requested = normalizeTn(clean(body.trackingNumber));
+    let created;
     const shipment = await db.tx(async (q) => {
       if (requested && (await repo.shipmentExists(q, requested))) return null;
       const tn = requested || (await generateTrackingNumber(q));
-      await createShipment(q, tn, body);
+      created = await createShipment(q, tn, body);
       return repo.getShipment(q, tn);
     });
     if (!shipment) return res.status(409).json({ error: "Tracking number already exists" });
+    notifyCustomer(shipment, [created]);
     res.status(201).json({ success: true, trackingNumber: shipment.trackingNumber, shipment });
   });
 
@@ -130,7 +143,7 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
       if (quote.status !== "pending") return { error: 409 };
 
       const tn = await generateTrackingNumber(q);
-      await createShipment(q, tn, {
+      const created = await createShipment(q, tn, {
         service: titleCase(quote.service) || "Standard Shipping",
         from: quote.from.city || quote.from.address || "",
         to: quote.to.city || quote.to.address || "",
@@ -150,12 +163,13 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
         },
       });
       await repo.markQuoteConverted(q, quote.id, tn);
-      return { shipment: await repo.getShipment(q, tn) };
+      return { shipment: await repo.getShipment(q, tn), created };
     });
 
     if (result.error === 404) return notFound(res, "Quote");
     if (result.error === 409) return res.status(409).json({ error: "Quote already converted" });
     const { shipment } = result;
+    notifyCustomer(shipment, [result.created]);
     res.status(201).json({ success: true, trackingNumber: shipment.trackingNumber, shipment });
   });
 
@@ -164,14 +178,16 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
   app.patch("/api/shipments/:id", admin, async (req, res) => {
     const body = req.body || {};
     const tn = normalizeTn(req.params.id);
+    let changed = null;
     const shipment = await db.tx(async (q) => {
       const current = await repo.lockShipment(q, tn);
       if (!current) return null;
       await repo.updateShipment(q, tn, shipmentFields(body), now());
-      if (body.status) await changeStatus(q, tn, current.status, body.status);
+      if (body.status) changed = await changeStatus(q, tn, current.status, body.status);
       return repo.getShipment(q, tn);
     });
     if (!shipment) return notFound(res);
+    if (changed) notifyCustomer(shipment, [changed]);
     res.json({ success: true, shipment });
   });
 
@@ -179,13 +195,15 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
     const status = clean(req.body?.status);
     if (!status) return res.status(400).json({ error: "Status is required" });
     const tn = normalizeTn(req.params.id);
+    let changed = null;
     const shipment = await db.tx(async (q) => {
       const current = await repo.lockShipment(q, tn);
       if (!current) return null;
-      await changeStatus(q, tn, current.status, status, req.body?.description);
+      changed = await changeStatus(q, tn, current.status, status, req.body?.description);
       return repo.getShipment(q, tn);
     });
     if (!shipment) return notFound(res);
+    if (changed) notifyCustomer(shipment, [changed]);
     res.json({ success: true, shipment });
   });
 
@@ -200,21 +218,24 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
     const title = clean(req.body?.title);
     if (!title) return res.status(400).json({ error: "Title is required" });
     const tn = normalizeTn(req.params.id);
+    let added;
     const shipment = await db.tx(async (q) => {
       if (!(await repo.lockShipment(q, tn))) return null;
       const time = now();
-      await repo.insertEvent(q, tn, {
+      added = {
         id: newId(),
         time,
         type: "update",
         title,
         location: clean(req.body.location),
         description: clean(req.body.description),
-      });
+      };
+      await repo.insertEvent(q, tn, added);
       await repo.updateShipment(q, tn, {}, time);
       return repo.getShipment(q, tn);
     });
     if (!shipment) return notFound(res);
+    notifyCustomer(shipment, [added]);
     res.status(201).json({ success: true, shipment });
   });
 
@@ -296,10 +317,11 @@ function createApp({ db, adminUsername, adminPassword, tokenSecret, corsOrigin }
       await repo.updateStop(q, stop.id, changes);
       for (const event of events) await repo.insertEvent(q, tn, event);
       await repo.updateShipment(q, tn, {}, at);
-      return { shipment: await repo.getShipment(q, tn) };
+      return { shipment: await repo.getShipment(q, tn), events };
     });
 
     if (result.missing) return notFound(res, result.missing);
+    notifyCustomer(result.shipment, result.events);
     res.json({ success: true, shipment: result.shipment });
   });
 
