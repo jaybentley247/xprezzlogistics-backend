@@ -129,7 +129,8 @@ function connect(connectionString) {
   if (["prefer", "require", "verify-ca"].includes(url.searchParams.get("sslmode"))) {
     url.searchParams.set("sslmode", "verify-full");
   }
-  const pool = new Pool({ connectionString: url.toString(), max: 5 });
+  // Fail fast if the database can't be reached, rather than hanging startup.
+  const pool = new Pool({ connectionString: url.toString(), max: 5, connectionTimeoutMillis: 10000 });
   pool.on("error", (err) => console.error("Postgres pool error:", err.message));
   return fromPool(pool);
 }

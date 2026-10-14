@@ -24,7 +24,9 @@ if (missing.length) {
 
 async function main() {
   const db = connect(DATABASE_URL);
+  console.log("Connecting to database...");
   await migrate(db);
+  console.log("Database ready.");
 
   const app = createApp({
     db,
